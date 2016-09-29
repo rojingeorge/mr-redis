@@ -28,7 +28,7 @@ type Instance struct {
 
 // Creates a new instance variable
 // Fills up the structure and updates the central store
-// Returns an instnace pointer
+// Returns an instance pointer
 // Returns nil if the instance already exists
 
 func NewInstance(Name string, Type string, Masters int, Slaves int, Cap int) *Instance {
@@ -37,7 +37,7 @@ func NewInstance(Name string, Type string, Masters int, Slaves int, Cap int) *In
 	return p
 }
 
-//Load an instnace from the store using Instance Name from the store
+//Load an instance from the store using Instance Name from the store
 // if the instance is unavailable then return nil
 
 func LoadInstance(Name string) *Instance {
@@ -213,14 +213,17 @@ type Instance_Json struct {
 	Type     string
 	Status   string
 	Capacity int
-	Master   Proc_Json
-	Slaves   []Proc_Json
+	Master   *ProcJson
+	Slaves   []*ProcJson
 }
+
+/*
 
 type Proc_Json struct {
 	IP   string
 	Port string
 }
+*/
 
 func (I *Instance) ToJson_Obj() Instance_Json {
 
@@ -233,14 +236,10 @@ func (I *Instance) ToJson_Obj() Instance_Json {
 	if I.Status == INST_STATUS_RUNNING {
 		var p *Proc
 		p = I.Procs[I.Mname]
-		res.Master.IP = p.IP
-		res.Master.Port = p.Port
+		res.Master = p.ToJson()
 		for _, sname := range I.Snames {
 			p = I.Procs[sname]
-			var s Proc_Json
-			s.IP = p.IP
-			s.Port = p.Port
-			res.Slaves = append(res.Slaves, s)
+			res.Slaves = append(res.Slaves, p.ToJson())
 		}
 	}
 
@@ -258,14 +257,11 @@ func (I *Instance) ToJson() string {
 	if I.Status == INST_STATUS_RUNNING {
 		var p *Proc
 		p = I.Procs[I.Mname]
-		res.Master.IP = p.IP
+		res.Master = p.ToJson()
 		res.Master.Port = p.Port
 		for _, sname := range I.Snames {
 			p = I.Procs[sname]
-			var s Proc_Json
-			s.IP = p.IP
-			s.Port = p.Port
-			res.Slaves = append(res.Slaves, s)
+			res.Slaves = append(res.Slaves, p.ToJson())
 		}
 	}
 

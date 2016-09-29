@@ -24,7 +24,7 @@ type RedMon struct {
 	IP      string    //IP address the redis instance should bind to
 	Port    int       //The port number of this redis instance to be started
 	Ofile   io.Writer //Stdout log file to be re-directed to this io.writer
-	Efile   io.Writer //stderr of the redis instnace should be re-directed to this file
+	Efile   io.Writer //stderr of the redis instance should be re-directed to this file
 	MS_Sync bool      //Make this as master after sync
 	monChan chan int
 	Cmd     *exec.Cmd
@@ -54,7 +54,7 @@ func NewRedMon(tskName string, IP string, Port int, data string) *RedMon {
 	//ToDo does this need error handling
 	R.L = log.New(out, "[Info]", log.Lshortfile)
 
-	R.L.Printf("Split data recived is %v\n", data)
+	R.L.Printf("Split data received is %v\n", data)
 
 	split_data := strings.Split(data, " ")
 	if len(split_data) < 1 || len(split_data) > 4 {
@@ -105,9 +105,9 @@ func (R *RedMon) getConnectedClient() *redisclient.Client {
 func (R *RedMon) launchRedisServer(isSlave bool, IP string, port string) bool {
 
 	if isSlave {
-		R.Cmd = exec.Command("./redis-server", "--port", fmt.Sprintf("%d", R.Port), "--SlaveOf", IP, port)
+		R.Cmd = exec.Command("./redis-server", "--protected-mode", "no", "--port", fmt.Sprintf("%d", R.Port), "--SlaveOf", IP, port)
 	} else {
-		R.Cmd = exec.Command("./redis-server", "--port", fmt.Sprintf("%d", R.Port))
+		R.Cmd = exec.Command("./redis-server", "--protected-mode", "no", "--port", fmt.Sprintf("%d", R.Port))
 	}
 
 	err := R.Cmd.Start()
@@ -225,32 +225,62 @@ func (R *RedMon) StartSlaveAndMakeMaster() bool {
 	return true
 }
 
+func fetchSubSection(value string, SubSection string) string {
+	arr := strings.Split(value, "\r\n")
+
+	for _, key := range arr {
+		if strings.Contains(key, SubSection) {
+			sub_arr := strings.Split(key, ":")
+			if len(sub_arr) != 2 {
+				return ""
+			}
+			return sub_arr[1]
+		}
+	}
+	return ""
+}
+
+func (R *RedMon) GetRedisInfo(Section string, Subsection string) string {
+
+	value, err := R.Client.Info(Section).Result()
+	if err != nil {
+		R.L.Printf("STATS collection returned error on IP:%s and PORT:%d Err:%v for section %s subsection %s", R.IP, R.Port, err, Section, Subsection)
+		return ""
+	}
+	return fetchSubSection(value, Subsection)
+}
+
 func (R *RedMon) UpdateStats() bool {
 
 	var redisStats typ.Stats
+	var txt string
 	var err error
 
-	redisStats.Mem, err = R.Client.Info("memory").Result()
+	txt = R.GetRedisInfo("Memory", "used_memory")
+	redisStats.Mem, err = strconv.ParseInt(txt, 10, 64)
 	if err != nil {
-		R.L.Printf("STATS collection returned error on IP:%s and PORT:%d Err:%v", R.IP, R.Port, err)
-		return false
+		log.Printf("UpdateStats() Unable to convert %s to number", txt)
 	}
 
-	redisStats.Cpu, err = R.Client.Info("cpu").Result()
+	txt = R.GetRedisInfo("Server", "uptime_in_seconds")
+	redisStats.Uptime, err = strconv.ParseInt(txt, 10, 64)
 	if err != nil {
-		R.L.Printf("STATS collection returned error on IP:%s and PORT:%d Err:%v", R.IP, R.Port, err)
-		return false
+		log.Printf("UpdateStats() Unable to convert %s to number", txt)
 	}
 
-	redisStats.Others, err = R.Client.Info("stats").Result()
+	txt = R.GetRedisInfo("Clients", "connected_clients")
+	redisStats.Clients, err = strconv.Atoi(txt)
 	if err != nil {
-		R.L.Printf("STATS collection returned error on IP:%s and PORT:%d Err:%v", R.IP, R.Port, err)
-		return false
+		log.Printf("UpdateStats() Unable to convert %s to number", txt)
 	}
 
-	R.P.Stats = R.P.ToJsonStats(redisStats)
+	txt = R.GetRedisInfo("Replication", "master_last_io_seconds_ago")
+	redisStats.LastSyced, err = strconv.Atoi(txt)
+	if err != nil {
+		log.Printf("UpdateStats() Unable to convert %s to number", txt)
+	}
 
-	errSync := R.P.SyncStats()
+	errSync := R.P.SyncStats(redisStats)
 	if !errSync {
 		R.L.Printf("Error syncing stats to store")
 		return false
@@ -262,9 +292,13 @@ func (R *RedMon) Monitor() bool {
 
 	//wait for a second for the server to start
 	//ToDo: is it needed
-	time.Sleep(1 * time.Second)
+
+	CheckMsgCh := time.After(time.Second)
+	UpdateStatsCh := time.After(2 * time.Second) 
+
 
 	for {
+		if R.P.State == "Running" {
 		select {
 
 		case <-R.monChan:
@@ -272,13 +306,18 @@ func (R *RedMon) Monitor() bool {
 			//signal to stop monitoring this
 			return false
 
-		case <-time.After(time.Second):
+		case <- CheckMsgCh:
 			//this is to check communication from scheduler; mesos messages are not reliable
 			R.CheckMsg()
+			CheckMsgCh = time.After(time.Second)
 
-		case <-time.After(1 * time.Second):
+		case <- UpdateStatsCh:
 			R.UpdateStats()
+			UpdateStatsCh = time.After(2 * time.Second)
 		}
+		} else {
+		time.Sleep(time.Second)
+}
 
 	}
 
